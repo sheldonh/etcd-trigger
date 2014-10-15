@@ -55,11 +55,11 @@ notify_url = URI(get_notify_url_from_env(ENV))
 $logger = Logger.new($stderr)
 $logger.level = LOG_LEVELS[ENV['LOG_LEVEL'] || "info"]
 
-begin
-  etcd = get_etcd
-  $logger.info "watching #{watch_key}"
+loop do
+  begin
+    etcd = get_etcd
+    $logger.info "watching #{watch_key}"
 
-  loop do
     $logger.debug "watching #{watch_key}"
     watch_node = etcd.watch(watch_key).node
     if notify_key != watch_key
@@ -80,12 +80,12 @@ begin
         watch = false
       end
     end
-  end
-rescue Exception => e
-  if e.is_a?(SignalException) or e.is_a?(SystemExit)
-    raise
-  else
-    $logger.error "#{e.class}: #{e.message}\n\t#{e.backtrace.join("\n\t")}"
-    sleep 1
+  rescue Exception => e
+    if e.is_a?(SignalException) or e.is_a?(SystemExit)
+      raise
+    else
+      $logger.error "#{e.class}: #{e.message}\n\t#{e.backtrace.join("\n\t")}"
+      sleep 1
+    end
   end
 end
