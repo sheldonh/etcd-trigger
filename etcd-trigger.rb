@@ -33,14 +33,26 @@ def get_peers_from_env(env)
   end
 end
 
-def get_notify_url_from_env(env)
-  if env['NOTIFY_URL']
-    env['NOTIFY_URL']
+def get_notify_urls_from_env(env)
+  if env['NOTIFY_URLS']
+    urls = env['NOTIFY_URLS'].split.map { |x| interpolate(x) }
   else
-    address = env['NOTIFY_PORT_8080_TCP_ADDR'] || '127.0.0.1'
-    port = env['NOTIFY_PORT_8080_TCP_PORT'] || '8080'
-    path = env['NOTIFY_PATH'] || '/'
-    'http://' + address + ':' + port + path
+    # Deprecated
+    if env['NOTIFY_URL']
+      [ env['NOTIFY_URL'] ]
+    else
+      address = env['NOTIFY_PORT_8080_TCP_ADDR'] || '127.0.0.1'
+      port = env['NOTIFY_PORT_8080_TCP_PORT'] || '8080'
+      path = env['NOTIFY_PATH'] || '/'
+      [ 'http://' + address + ':' + port + path ]
+    end
+  end
+end
+
+def interpolate(x)
+  x.gsub(/\$\{[A-Z_][A-Z0-9_]*\}/) do |match|
+    envar = match[2, match.length - 3]
+    ENV[envar] or raise "No such variable #{match}"
   end
 end
 
@@ -50,7 +62,9 @@ end
 
 watch_key = ENV['ETCD_WATCH_KEY'] or raise "no ETCD_WATCH_KEY given"
 notify_key = ENV['ETCD_NOTIFY_KEY'] || ENV['ETCD_WATCH_KEY']
-notify_url = URI(get_notify_url_from_env(ENV))
+retrigger_key = ENV['ETCD_RETRIGGER_KEY']
+
+notify_urls = get_notify_urls_from_env(ENV).map { |x| URI(x) }
 
 $logger = Logger.new($stderr)
 $logger.level = LOG_LEVELS[ENV['LOG_LEVEL'] || "info"]
@@ -67,18 +81,23 @@ loop do
     else
       notify_node = watch_node
     end
-    $logger.debug "notifying #{notify_url}:\n#{notify_node.value.chomp}"
-    Net::HTTP.start(notify_url.host, notify_url.port) do |http|
-      req = Net::HTTP::Put.new(notify_url)
-      req.body = notify_node.value
-      res = http.request(req)
-      if res.code[0] == '2'
-        $logger.info "notification receiver success: #{res.body.chomp}"
-        watch = true
-      else
-        $logger.error "error from #{notify_url}: #{res.body.chomp}"
-        watch = false
+    notify_urls.each do |notify_url|
+      $logger.debug "notifying #{notify_url}:\n#{notify_node.value.chomp}"
+      Net::HTTP.start(notify_url.host, notify_url.port) do |http|
+        req = Net::HTTP::Put.new(notify_url)
+        req.body = notify_node.value
+        res = http.request(req)
+        if res.code[0] == '2'
+          $logger.info "notified #{notify_url}: #{res.body.chomp}"
+        else
+          $logger.error "error from #{notify_url}: #{res.body.chomp}"
+        end
       end
+    end
+    if retrigger_key
+      $logger.debug "retriggering #{retrigger_key}"
+      etcd.set(retrigger_key, value: 1)
+      $logger.info "retriggered #{retrigger_key}"
     end
   rescue Exception => e
     if e.is_a?(SignalException) or e.is_a?(SystemExit)
