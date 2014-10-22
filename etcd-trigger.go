@@ -1,21 +1,16 @@
 package main
 
 import (
-	"flag"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/codegangsta/cli"
 	"github.com/coreos/go-etcd/etcd"
 )
-
-var machinesFlag = flag.String("machines", "http://127.0.0.1:4001", "comma-separated list of etcd machines")
-var notifiesFlag = flag.String("notifies", "http://127.0.0.1:8080/", "comma-separated list of URLs to notify")
-var triggerKey = flag.String("trigger", "", "etcd key to watch (required)")
-var retriggerKey = flag.String("retrigger", "", "etcd key to write after notifications (default no retrigger)")
-var readKey = flag.String("read", "", "etcd key whose value to send to notify URLs (default trigger key)")
 
 func watch(c *etcd.Client, watch string, read string) (trigger string, value string, err error) {
 	var r *etcd.Response
@@ -74,46 +69,63 @@ func retrigger(c *etcd.Client, key string, trigger string) (err error) {
 }
 
 func main() {
-	flag.Parse()
-	machines := strings.Split(*machinesFlag, ",")
-	notifies := strings.Split(*notifiesFlag, ",")
-	if *triggerKey == "" {
-		log.Fatal("-trigger flag required")
+	app := cli.NewApp()
+	app.Name = "etcd-trigger"
+	app.Usage = "sends values from etcd to HTTP end points on change"
+	app.Version = "0.0.1"
+	app.Flags = []cli.Flag{
+		cli.StringFlag{"machines", "http://127.0.0.1:4001", "comma-separated list of etcd machines", "ETCD_MACHINES"},
+		cli.StringFlag{"notifies", "http://127.0.0.1:8080/", "comma-separated list of URLs to notify", "NOTIFIES"},
+		cli.StringFlag{"read", "", "etcd key whose value to send to notify URLs (default: same as --trigger)", "READ"},
+		cli.StringFlag{"retrigger", "", "etcd key to write after notifications (default: no retrigger)", "RETRIGGER"},
+		cli.StringFlag{"trigger", "", "etcd key to watch (required)", "TRIGGER"},
 	}
-	if *readKey == "" {
-		readKey = triggerKey
-	}
+	app.Action = func(c *cli.Context) {
+		var (
+			client         *etcd.Client
+			err            error
+			trigger, value string
+			url            string
+		)
 
-	client := etcd.NewClient(machines)
+		machines := strings.Split(c.String("machines"), ",")
+		notifies := strings.Split(c.String("notifies"), ",")
+		triggerKey := c.String("trigger")
+		readKey := c.String("read")
+		retriggerKey := c.String("retrigger")
 
-	var (
-		trigger, value string
-		err            error
-		url            string
-	)
-
-	for {
-		trigger, value, err = watch(client, *triggerKey, *readKey)
-		if err != nil {
-			goto Error
+		if triggerKey == "" {
+			log.Fatal("-trigger flag required")
+		}
+		if readKey == "" {
+			readKey = triggerKey
 		}
 
-		for _, url = range notifies {
-			err = notify(url, value)
+		client = etcd.NewClient(machines)
+		for {
+			trigger, value, err = watch(client, triggerKey, readKey)
 			if err != nil {
 				goto Error
 			}
-		}
 
-		if *retriggerKey != "" {
-			err = retrigger(client, *triggerKey, trigger)
-			if err != nil {
-				goto Error
+			for _, url = range notifies {
+				err = notify(url, value)
+				if err != nil {
+					goto Error
+				}
 			}
+
+			if retriggerKey != "" {
+				err = retrigger(client, triggerKey, trigger)
+				if err != nil {
+					goto Error
+				}
+			}
+			continue
+		Error:
+			log.Print("error: ", err)
+			time.Sleep(time.Second)
 		}
-		continue
-	Error:
-		log.Print("error: ", err)
-		time.Sleep(time.Second)
 	}
+	app.Run(os.Args)
 }

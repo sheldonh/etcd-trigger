@@ -1,33 +1,48 @@
 # etcd-trigger
 
-`etcd-trigger` is a long-lived process that sends values from etcd to an HTTP end point on change.
+`etcd-trigger` is a long-lived process that sends values from etcd to HTTP end points on change.
 
 It can watch one key and send the value of another, or it can send the value of the key it watches.
 
 ## Usage
 
-Configuration is performed through environment variables.
+```
+NAME:
+   etcd-trigger - sends values from etcd to HTTP end points on change
 
-* `ETCD_WATCH_KEY` - The etcd key to watch (mandatory, no default).
-* `ETCD_NOTIFY_KEY` - The etcd key whose value to send to `NOTIFY_URL` (default: `ETCD_WATCH_KEY`).
-* `ETCD_RETRIGGER_KEY` - If specified, an etcd key to write after notification, in support of chaining (default: unset).
-* `ETCD_PEERS` - A whitespace-delimited list of one or more etcd peer URLs (default: `http://127.0.0.1:4001`).
-* `ETCD_PORT_4001_TCP_ADDR` - The address of an etcd peer if `ETCD_PEERS` is not given (default: `127.0.0.1`).
-* `ETCD_PORT_4001_TCP_PORT` - The port of an etcd peer if `ETCD_PEERS` is not given (default: `4001`).
-* `NOTIFY_URLS` - A space-delimited list of HTTP end points to notify on change (default: `http://127.0.0.1:8080/`).
-* `NOTIFY_URL` - _Deprecated_.
-* `NOTIFY_PORT_8080_TCP_ADDR` - _Deprecated_.
-* `NOTIFY_PORT_8080_TCP_PORT` - _Deprecated_.
-* `NOTIFY_PATH` - _Deprecated_.
+USAGE:
+   etcd-trigger [global options] command [command options] [arguments...]
 
-The value of the etcd key named by `ETCD_NOTIFY_KEY` (or by `ETCD_WATCH_KEY` if not given)
-is submitted as the body of an HTTP PUT to each URL in `NOTIFY_URLS` when the value of etcd modifiedIndex of `ETCD_WATCH_KEY` changes.
+VERSION:
+   0.0.1
 
-If `ETCD_RETRIGGER_KEY` is specified, `etcd-trigger` will write the value "1" to that key on success. This allows multiple
-triggers to be chained.
+COMMANDS:
+   help, h      Shows a list of commands or help for one command
+
+GLOBAL OPTIONS:
+   --machines 'http://127.0.0.1:4001'   comma-separated list of etcd machines [$ETCD_MACHINES]
+   --notifies 'http://127.0.0.1:8080/'  comma-separated list of URLs to notify [$NOTIFIES]
+   --read                               etcd key whose value to send to notify URLs (default: same as --trigger) [$READ]
+   --retrigger                          etcd key to write after notifications (default: no retrigger) [$RETRIGGER]
+   --trigger                            etcd key to watch (required) [$TRIGGER]
+   --help, -h                           show help
+   --version, -v                        print the version
+```
+
+The value of the etcd key named by `$READ` (or by `$TRIGGER` if not given)
+is submitted as the body of an HTTP PUT to each URL in `$NOTIFIES` when the etcd modifiedIndex of `$TRIGGER` changes.
+
+If `$RETRIGGER` is specified, `etcd-trigger` will write the value received from `$TRIGGER` to the key named by `$RETRIGGER` on success.
+This allows multiple triggers to be chained.
 
 If any notification is unsuccessful (either because of a network failure or an HTTP response that does not start with `2`),
-and subsequent notifications and retrigger are not attempted.
+any subsequent notifications and retrigger are not attempted for the current change. This does not prevent `etcd-trigger` from
+continuing to watch the trigger and try again on next change.
+
+## TODO
+
+* Add back support for `ETCD_PORT_4001_TCP_ADDR` and `ETCD_PORT_4001_TCP_PORT`.
+* Add back support for environment variable interpolation in NOTIFY URLs.
 
 ## Examples
 
