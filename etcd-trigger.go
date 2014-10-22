@@ -1,15 +1,18 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/codegangsta/cli"
 	"github.com/coreos/go-etcd/etcd"
+	"github.com/jcomputing/dns-clb-go/clb"
 )
 
 func watch(c *etcd.Client, watch string, read string) (trigger string, value string, err error) {
@@ -22,7 +25,7 @@ func watch(c *etcd.Client, watch string, read string) (trigger string, value str
 	}
 	trigger = r.Node.Value
 
-	if read == watch {
+	if read != watch {
 		r, err = c.Get(read, false, false)
 		if err != nil {
 			return
@@ -35,7 +38,29 @@ func watch(c *etcd.Client, watch string, read string) (trigger string, value str
 	return
 }
 
-func notify(url, value string) (err error) {
+func lookup(c clb.LoadBalancer, u string) (string, error) {
+	if c == nil {
+		return u, nil
+	}
+
+	x, err := url.Parse(u)
+	if err != nil {
+		return "", err
+	}
+
+	components := strings.Split(x.Host, ":")
+	if len(components) == 1 {
+		h := components[0]
+		a, err := c.GetAddress(h)
+		if err == nil {
+			x.Host = fmt.Sprintf("%s:%d", a.Address, a.Port)
+		}
+	}
+
+	return x.String(), nil
+}
+
+func notify(u, value string) (err error) {
 	var (
 		body []byte
 		res  *http.Response
@@ -43,7 +68,7 @@ func notify(url, value string) (err error) {
 	)
 
 	c := &http.Client{}
-	req, err = http.NewRequest("PUT", url, strings.NewReader(value))
+	req, err = http.NewRequest("PUT", u, strings.NewReader(value))
 	if err != nil {
 		return
 	}
@@ -56,7 +81,7 @@ func notify(url, value string) (err error) {
 	if err != nil {
 		return
 	}
-	log.Print("notified: ", url, " (", res.StatusCode, " ", string(body), ")")
+	log.Print("notified: ", u, " (", res.StatusCode, " ", string(body), ")")
 	return
 }
 
@@ -74,6 +99,8 @@ func main() {
 	app.Usage = "sends values from etcd to HTTP end points on change"
 	app.Version = "0.0.1"
 	app.Flags = []cli.Flag{
+		cli.StringFlag{"dns", "", "DNS server for SRV lookups (default: no SRV lookups)", "DNS"},
+		cli.StringFlag{"dns-port", "53", "DNS server for SRV lookups (default: 53)", "DNS_PORT"},
 		cli.StringFlag{"machines", "http://127.0.0.1:4001", "comma-separated list of etcd machines", "ETCD_MACHINES"},
 		cli.StringFlag{"notifies", "http://127.0.0.1:8080/", "comma-separated list of URLs to notify", "NOTIFIES"},
 		cli.StringFlag{"read", "", "etcd key whose value to send to notify URLs (default: same as --trigger)", "READ"},
@@ -83,9 +110,10 @@ func main() {
 	app.Action = func(c *cli.Context) {
 		var (
 			client         *etcd.Client
+			dnsClb         clb.LoadBalancer
 			err            error
 			trigger, value string
-			url            string
+			u              string
 		)
 
 		machines := strings.Split(c.String("machines"), ",")
@@ -101,6 +129,10 @@ func main() {
 			readKey = triggerKey
 		}
 
+		if c.String("dns") != "" {
+			dnsClb = clb.NewClb(c.String("dns"), c.String("dns-port"), clb.RoundRobin)
+		}
+
 		client = etcd.NewClient(machines)
 		for {
 			trigger, value, err = watch(client, triggerKey, readKey)
@@ -108,8 +140,12 @@ func main() {
 				goto Error
 			}
 
-			for _, url = range notifies {
-				err = notify(url, value)
+			for _, u = range notifies {
+				u, err = lookup(dnsClb, u)
+				if err != nil {
+					goto Error
+				}
+				err = notify(u, value)
 				if err != nil {
 					goto Error
 				}
