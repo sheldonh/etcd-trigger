@@ -51,7 +51,7 @@ from SkyDNS on a CoreOS cluster:
 ```
 docker run -d \
 	-e DNS=172.17.8.101 \
-	-e MACHINES=http://172.17.8.101:4001,http://172.17.8.102:4001,http://172.17.8.103:4001 \
+	-e ETCD_MACHINES=http://172.17.8.101:4001,http://172.17.8.102:4001,http://172.17.8.103:4001 \
 	-e NOTIFIES=http://redis-1-dictator.docker/master,http://redis-1-dnsd.docker/dns \
 	-e TRIGGER=/config/redis-1/topology-trigger \
 	-e READ=/config/redis-1/topology \
