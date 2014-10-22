@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-etcd/etcd"
 )
@@ -16,10 +17,60 @@ var triggerKey = flag.String("trigger", "", "etcd key to watch (required)")
 var retriggerKey = flag.String("retrigger", "", "etcd key to write after notifications (default no retrigger)")
 var readKey = flag.String("read", "", "etcd key whose value to send to notify URLs (default trigger key)")
 
-func assert(err error) {
+func watch(c *etcd.Client, watch string, read string) (trigger string, value string, err error) {
+	var r *etcd.Response
+
+	log.Print("watching ", watch)
+	r, err = c.Watch(watch, 0, false, nil, nil)
 	if err != nil {
-		log.Fatal("etcd-trigger: ", err)
+		return
 	}
+	trigger = r.Node.Value
+
+	if read == watch {
+		r, err = c.Get(read, false, false)
+		if err != nil {
+			return
+		}
+		value = r.Node.Value
+	} else {
+		value = trigger
+	}
+
+	return
+}
+
+func notify(url, value string) (err error) {
+	var (
+		body []byte
+		res  *http.Response
+		req  *http.Request
+	)
+
+	c := &http.Client{}
+	req, err = http.NewRequest("PUT", url, strings.NewReader(value))
+	if err != nil {
+		return
+	}
+	res, err = c.Do(req)
+	if err != nil {
+		return
+	}
+	defer res.Body.Close()
+	body, err = ioutil.ReadAll(res.Body)
+	if err != nil {
+		return
+	}
+	log.Print("notified: ", url, " (", res.StatusCode, " ", string(body), ")")
+	return
+}
+
+func retrigger(c *etcd.Client, key string, trigger string) (err error) {
+	_, err = c.Set(key, trigger, 0)
+	if err == nil {
+		log.Print("retriggered: ", key, " value: ", trigger)
+	}
+	return
 }
 
 func main() {
@@ -32,45 +83,37 @@ func main() {
 	if *readKey == "" {
 		readKey = triggerKey
 	}
-	log.Print("trigger: ", *triggerKey)
-	log.Print("read: ", *readKey)
-	log.Print("notifies: ", notifies)
+
+	client := etcd.NewClient(machines)
+
+	var (
+		trigger, value string
+		err            error
+		url            string
+	)
 
 	for {
-		client := etcd.NewClient(machines)
-		response, err := client.Watch(*triggerKey, 0, false, nil, nil)
-		assert(err)
-		triggerValue := response.Node.Value
-		var value string
-
-		if readKey != triggerKey {
-			response, err := client.Get(*readKey, false, false)
-			assert(err)
-			value = response.Node.Value
-		} else {
-			value = triggerValue
+		trigger, value, err = watch(client, *triggerKey, *readKey)
+		if err != nil {
+			goto Error
 		}
 
-		log.Print("trigger value: ", triggerValue)
-		log.Print("value: ", value)
-
-		for _, url := range notifies {
-			client := &http.Client{}
-			request, err := http.NewRequest("PUT", url, strings.NewReader(value))
-			assert(err)
-			response, err := client.Do(request)
-			assert(err)
-			defer response.Body.Close()
-			bytes, err := ioutil.ReadAll(response.Body)
-			assert(err)
-			body := string(bytes)
-			log.Print("notify: ", url, "response: ", response.StatusCode, " ", body)
+		for _, url = range notifies {
+			err = notify(url, value)
+			if err != nil {
+				goto Error
+			}
 		}
 
 		if *retriggerKey != "" {
-			_, err := client.Set(*retriggerKey, triggerValue, 0)
-			assert(err)
-			log.Print("retriggered: ", *retriggerKey, " value: ", triggerValue)
+			err = retrigger(client, *triggerKey, trigger)
+			if err != nil {
+				goto Error
+			}
 		}
+		continue
+	Error:
+		log.Print("error: ", err)
+		time.Sleep(time.Second)
 	}
 }
