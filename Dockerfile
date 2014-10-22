@@ -1,5 +1,5 @@
-FROM ruby:2.1.3-onbuild
+FROM golang:onbuild
 
 MAINTAINER Sheldon Hearn <sheldonh@starjuice.net>
 
-CMD ["./etcd-trigger.rb"]
+CMD ["./etcd-trigger"]
